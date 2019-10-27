@@ -1,43 +1,86 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
-	"strconv"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/gorilla/mux"
 )
 
 // Todo :
 type Todo struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Completed bool   `json:"completed"`
+	ID        primitive.ObjectID `bson:"_id"`
+	Title     string             `bson:"title"`
+	Completed bool               `bson:"completed"`
+	CreatedAt time.Time          `bson:"created_at"`
+	UpdatedAt time.Time          `bson:"updated_at"`
 }
 
-// Mock Data
-var todosCollection []Todo
+var collection *mongo.Collection
 
 func getAllTodo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(todosCollection)
+
+	var todos []*Todo
+
+	findOptions := options.Find()
+	findOptions.SetLimit(20)
+
+	cur, err := collection.Find(context.TODO(), bson.D{{}}, findOptions)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for cur.Next(context.TODO()) {
+		var item Todo
+
+		err := cur.Decode(&item)
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		todos = append(todos, &item)
+	}
+
+	if err := cur.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	cur.Close(context.TODO())
+
+	json.NewEncoder(w).Encode(todos)
 }
 
 func getTodoByID(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	params := mux.Vars(r)
 
-	for _, item := range todosCollection {
-		if item.ID == params["id"] {
-			json.NewEncoder(w).Encode(item)
-			return
-		}
+	params := mux.Vars(r)
+	id, err := primitive.ObjectIDFromHex(params["id"])
+
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	json.NewEncoder(w).Encode(&Todo{})
+	var todo Todo
+	filter := bson.D{{"_id", id}}
+	err = collection.FindOne(context.TODO(), filter).Decode(&todo)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	json.NewEncoder(w).Encode(todo)
 }
 
 func createTodo(w http.ResponseWriter, r *http.Request) {
@@ -45,51 +88,82 @@ func createTodo(w http.ResponseWriter, r *http.Request) {
 
 	var todo Todo
 	_ = json.NewDecoder(r.Body).Decode(&todo)
-	todo.ID = strconv.Itoa(rand.Intn(1000000))
-	todo.Completed = false
-	todosCollection = append(todosCollection, todo)
 
-	json.NewEncoder(w).Encode(todo)
+	result, err := collection.InsertOne(context.TODO(), bson.M{
+		"title":      todo.Title,
+		"completed":  false,
+		"created_at": time.Now(),
+		"updated_at": time.Now(),
+	})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	json.NewEncoder(w).Encode(result)
 }
 
 func updateTodo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	params := mux.Vars(r)
 
-	for index := range todosCollection {
-		if todosCollection[index].ID == params["id"] {
-			todosCollection[index].Completed = true
-			json.NewEncoder(w).Encode(todosCollection[index])
-			return
-		}
+	params := mux.Vars(r)
+	id, err := primitive.ObjectIDFromHex(params["id"])
+
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	json.NewEncoder(w).Encode(&Todo{})
+	filter := bson.D{{"_id", id}}
+	update := bson.M{"$set": bson.D{{"completed", true}}}
+	result, err := collection.UpdateOne(context.TODO(), filter, update)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	json.NewEncoder(w).Encode(result)
 }
 
 func deleteTodo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	params := mux.Vars(r)
-	var todo Todo
 
-	for index := range todosCollection {
-		if todosCollection[index].ID == params["id"] {
-			todosCollection[index] = todosCollection[len(todosCollection)-1]
-			todosCollection[len(todosCollection)-1] = todo
-			todosCollection = todosCollection[:len(todosCollection)-1]
-			return
-		}
+	params := mux.Vars(r)
+	id, err := primitive.ObjectIDFromHex(params["id"])
+
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	fmt.Fprintf(w, "Delete Success")
+	filter := bson.D{{"_id", id}}
+	result, err := collection.DeleteOne(context.TODO(), filter)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	json.NewEncoder(w).Encode(result)
 }
 
 func main() {
-	r := mux.NewRouter()
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+	client, err := mongo.Connect(context.TODO(), clientOptions)
 
-	// Mock Data
-	todosCollection = append(todosCollection, Todo{ID: "1", Title: "Study Golang", Completed: true})
-	todosCollection = append(todosCollection, Todo{ID: "2", Title: "Golang RestAPI", Completed: false})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Check Connection
+	err = client.Ping(context.TODO(), nil)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("MongoDB is connected...")
+
+	collection = client.Database("GoRestAPI").Collection("todo")
+
+	r := mux.NewRouter()
 
 	r.HandleFunc("/api/todo", getAllTodo).Methods("GET")
 	r.HandleFunc("/api/todo/{id}", getTodoByID).Methods("GET")
@@ -97,9 +171,5 @@ func main() {
 	r.HandleFunc("/api/todo/{id}", updateTodo).Methods("PUT")
 	r.HandleFunc("/api/todo/{id}", deleteTodo).Methods("DELETE")
 
-	err := http.ListenAndServe(":8080", r)
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
