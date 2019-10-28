@@ -1,0 +1,26 @@
+version: "3.4"
+services:
+  db:
+    container_name: mongodb
+    image: mongo:4.2.0-bionic
+    volumes:
+      - ./db:/data/db
+    ports:
+      - 27017:27017
+    networks:
+      - golang
+
+  api:
+    container_name: go_api_todo
+    build: .
+    ports:
+      - 8080:8080
+    networks:
+      - golang
+    depends_on:
+      - db
+    environment:
+      DBHOST: "mongodb://db"
+
+networks:
+  golang:
